@@ -8,6 +8,7 @@ from django.utils import timezone
 from .models import Listing, Booking, Payment
 from .serializers import ListingSerializer, BookingSerializer, PaymentSerializer, PaymentInitiationSerializer
 from .chapa_service import ChapaService
+from .tasks import send_booking_confirmation_email
 import uuid
 import logging
 
@@ -90,7 +91,7 @@ def listing_detail(request, pk):
 )
 @api_view(['GET', 'POST'])
 def booking_list_create(request):
-    """Retrieve all bookings or create a new booking"""
+    """List all bookings or create a new booking"""
     if request.method == 'GET':
         bookings = Booking.objects.all()
         serializer = BookingSerializer(bookings, many=True)
@@ -99,7 +100,24 @@ def booking_list_create(request):
     elif request.method == 'POST':
         serializer = BookingSerializer(data=request.data)
         if serializer.is_valid():
-            serializer.save()
+            booking = serializer.save()
+            
+            # Trigger email notification asynchronously
+            try:
+                send_booking_confirmation_email.delay(
+                    booking_id=booking.id,
+                    user_email=booking.user_email,
+                    user_name=booking.user_name,
+                    listing_title=booking.listing.title,
+                    start_date=str(booking.start_date),
+                    end_date=str(booking.end_date),
+                    total_price=str(booking.total_price)
+                )
+                logger.info(f'Email task queued for booking {booking.id}')
+            except Exception as e:
+                logger.error(f'Failed to queue email task for booking {booking.id}: {str(e)}')
+                # Don't fail the booking creation if email task fails
+            
             return Response(serializer.data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
